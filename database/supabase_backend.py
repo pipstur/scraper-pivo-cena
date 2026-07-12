@@ -93,11 +93,17 @@ class SupabaseDatabase:
         response = (
             self.client.table("prices")
             .select("scrape_date")
-            .order("scrape_date", desc=True)
+            .order(
+                "scrape_date",
+                desc=True,
+            )
             .execute()
         )
 
-        return [row["scrape_date"] for row in response.data]
+        return sorted(
+            {row["scrape_date"] for row in response.data},
+            reverse=True,
+        )
 
     def get_latest_date(self) -> str | None:
         """Return newest scrape date."""
