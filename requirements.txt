@@ -1,4 +1,5 @@
-streamlit>=1.35
+streamlit==1.59.1
+streamlit_plotly_events==0.0.6
 pandas==3.0.3
 plotly==6.9.0
 beautifulsoup4==4.15.0
