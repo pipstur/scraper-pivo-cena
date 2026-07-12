@@ -4,7 +4,9 @@ import rootutils
 
 rootutils.setup_root(__file__, indicator=".gitignore", pythonpath=True)
 
-import database.db as db
+from database.supabase_backend import SupabaseDatabase
+
+db = SupabaseDatabase()
 
 
 st.set_page_config(page_title="Beer Prices — Leaderboard", page_icon="🍺", layout="wide")
@@ -12,7 +14,7 @@ st.set_page_config(page_title="Beer Prices — Leaderboard", page_icon="🍺", l
 st.title("🍺 Daily Cheapest Beer Leaderboard")
 
 try:
-    db.check_db_exists()
+    db.check_connection()
 except FileNotFoundError as e:
     st.error(str(e))
     st.stop()
