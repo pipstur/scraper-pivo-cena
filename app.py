@@ -64,6 +64,6 @@ st.dataframe(
 
 st.markdown(
     "*Note: this shows the cheapest shop **shown on the listing page** for each "
-    'beer. A few products hide extra shops behind a "+N prodavnice" expander that '
-    "isn't scraped yet — so an even cheaper price may occasionally exist elsewhere.*"
+    "beer. If a shop is not listed for a beer, it may still have it in stock, but it was not found"
+    "on the listing page at the time of scraping.*"
 )
