@@ -16,7 +16,7 @@ from database.supabase_backend import (
 db = SupabaseDatabase()
 
 st.set_page_config(
-    page_title="Beer Prices — Store Map",
+    page_title="Beer Prices - Store Map",
     page_icon="🗺️",
     layout="wide",
 )
@@ -24,10 +24,9 @@ st.set_page_config(
 st.title("🗺️ Store Map")
 
 st.caption(
-    "Prices in this data are per retail **chain**, not per individual branch — "
-    "cenoteka.rs doesn't say which specific store had the price. "
-    "Each pin represents a chain. Click a pin or choose a chain to see its "
-    "cheapest beers right now."
+    "Prices in this data are per retail **chain**, not per individual branch - "
+    "cenoteka.rs doesn't say which specific store had the price. Though the prices are usually the"
+    " same across all branches, there may be exceptions."
 )
 
 try:
