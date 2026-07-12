@@ -38,12 +38,28 @@ class SupabasePusher:
             prices = self._fetch_prices(conn)
             self._push_prices(prices, product_map)
 
+            scrape_runs = self._fetch_runs(conn)
+            self._push_runs(scrape_runs)
+
     def _fetch_products(self, conn: sqlite3.Connection) -> list[dict]:
         """Fetch products from SQLite."""
         cursor = conn.execute(
             """
-            SELECT id, slug, name, url
+            SELECT id, slug, name, url, volume_liters
             FROM products
+            """
+        )
+
+        return [dict(row) for row in cursor.fetchall()]
+
+    def _fetch_runs(self, conn: sqlite3.Connection) -> list[dict]:
+        """Fetch scrape runs from SQLite."""
+        cursor = conn.execute(
+            """
+            SELECT id, started_at, finished_at,
+            scrape_date, products_discovered, products_skipped,
+            price_rows_recorded, status
+            FROM scrape_runs
             """
         )
 
@@ -81,6 +97,7 @@ class SupabasePusher:
                         "slug": product["slug"],
                         "name": product["name"],
                         "url": product["url"],
+                        "volume_liters": product["volume_liters"],
                     }
                     for product in products
                 ],
@@ -127,6 +144,39 @@ class SupabasePusher:
             .execute()
         )
 
+    def _push_runs(
+        self,
+        runs: list[dict],
+    ) -> None:
+        """Push scrape runs to Supabase."""
+
+        if not runs:
+            return
+
+        payload = []
+
+        for run in runs:
+            payload.append(
+                {
+                    "started_at": run["started_at"],
+                    "finished_at": run["finished_at"],
+                    "scrape_date": run["scrape_date"],
+                    "products_discovered": run["products_discovered"],
+                    "products_skipped": run["products_skipped"],
+                    "price_rows_recorded": run["price_rows_recorded"],
+                    "status": run["status"],
+                }
+            )
+
+        (
+            self.client.table("scrape_runs")
+            .upsert(
+                payload,
+                on_conflict="id",
+            )
+            .execute()
+        )
+
 
 def push_sqlite_to_supabase(sqlite_path: str) -> None:
     """
@@ -140,4 +190,6 @@ def push_sqlite_to_supabase(sqlite_path: str) -> None:
 
 
 if __name__ == "__main__":
-    push_sqlite_to_supabase("database/beer_prices.db")
+    print("Pushing local SQLite data to Supabase...")
+    push_sqlite_to_supabase("beer_prices.db")
+    print("Done.")

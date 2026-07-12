@@ -6,14 +6,15 @@ What it does:
   - Phase 1: walks every listing page (/pivo/, /pivo/p/2/, ...) to discover
     every product's slug/name/url/image/discount.
   - Phase 2: visits each product's OWN page (/p/{slug}/) to read its full
-    price comparison table -- this is where ALL shops show up. If a product's
+    price comparison table -- this is where ALL shops show up, including
+    the ones the listing page hides behind "+N prodavnice". If a product's
     detail page fails to fetch/parse for some reason, we fall back to
     whatever prices we already had from the listing page for that product,
     so a single bad request doesn't lose the whole day's data for it.
   - Saves everything into beer_prices.db, one row per (product, shop, date).
 
 Usage:
-    python3 scraper.py
+    python3 scrape_beer.py
 """
 
 import re
@@ -42,7 +43,21 @@ MAX_PAGES_SAFETY_CAP = 60
 MAX_RETRIES_ON_RATE_LIMIT = 6
 BASE_BACKOFF_SECONDS = 20
 
+# Data quality guardrails
+MIN_EXPECTED_PRODUCTS = 100  # if the listing scrape finds fewer than this, something's
+# probably broken (site changed, we got blocked, etc.) --
+# abort rather than silently writing a half-empty day.
+MIN_REASONABLE_PRICE = 10.0  # RSD. A parsed price outside this range is almost
+MAX_REASONABLE_PRICE = 3000.0  # certainly a parsing bug, not a real beer price.
+
 SHOP_SLUG_FROM_IMG_RE = re.compile(r"shop-([a-z0-9]+)-")
+MULTIPACK_VOLUME_RE = re.compile(r"(\d+)\s*[xX]\s*(\d+(?:[.,]\d+)?)\s*(ml|l)\b")
+SINGLE_VOLUME_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(ml|l)\b")
+
+
+# ---------------------------------------------------------------------------
+# Fetching
+# ---------------------------------------------------------------------------
 
 
 def get_page_url(page_num: int) -> str:
@@ -96,6 +111,11 @@ def fetch_url(url: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Parsing helpers
+# ---------------------------------------------------------------------------
+
+
 def parse_price(text: str):
     """'110,99' -> 110.99 ; ignores stray characters like 'RSD'."""
     cleaned = text.replace("RSD", "").strip()
@@ -123,9 +143,36 @@ def shop_slug_from_img(img_tag) -> str:
     return (img_tag.get("alt") or "").strip().lower().replace(" ", "-")
 
 
+def parse_volume_liters(name: str) -> float | None:
+    """
+    Extracts total volume in liters from a product name, e.g.:
+      'LAV 0,5l' -> 0.5
+      'TUBORG pivo staklo 0,0% 330ml' -> 0.33
+      'Pivo KABINET ... 4x0,33l' -> 1.32 (multipack)
+    Returns None if no volume pattern is found.
+    """
+    m = MULTIPACK_VOLUME_RE.search(name)
+    if m:
+        count = int(m.group(1))
+        unit_val = float(m.group(2).replace(",", "."))
+        liters = unit_val / 1000 if m.group(3) == "ml" else unit_val
+        return round(count * liters, 4)
+
+    m = SINGLE_VOLUME_RE.search(name)
+    if m:
+        unit_val = float(m.group(1).replace(",", "."))
+        liters = unit_val / 1000 if m.group(2) == "ml" else unit_val
+        return round(liters, 4)
+
+    return None
+
+
 def parse_price_rows(rows) -> list[dict]:
     """Given an iterable of '.row' elements each containing a shop img + a
-    .product_price div, extract (shop, price, cheapest, promo) dicts."""
+    .product_price div, extract (shop, price, cheapest, promo) dicts.
+    Prices outside a sane RSD range are dropped with a warning -- almost
+    certainly a parsing bug rather than a real price, and we'd rather skip
+    one data point than pollute the dataset with something like 0.01 RSD."""
     results = []
     for row in rows:
         shop_img = row.find("img")
@@ -134,6 +181,9 @@ def parse_price_rows(rows) -> list[dict]:
             continue
         price = parse_price(price_div.get_text(strip=True))
         if price is None:
+            continue
+        if not (MIN_REASONABLE_PRICE <= price <= MAX_REASONABLE_PRICE):
+            print(f"    ! skipping implausible price {price} RSD (outside sane range)")
             continue
         classes = price_div.get("class", [])
         results.append(
@@ -205,6 +255,11 @@ def parse_detail_prices(html: str) -> list[dict]:
     return parse_price_rows(rows)
 
 
+# ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
+
+
 def init_db(conn: sqlite3.Connection):
     conn.executescript(
         """
@@ -231,20 +286,63 @@ def init_db(conn: sqlite3.Connection):
 
         CREATE INDEX IF NOT EXISTS idx_prices_product ON prices(product_id);
         CREATE INDEX IF NOT EXISTS idx_prices_date ON prices(scrape_date);
+
+        CREATE TABLE IF NOT EXISTS scrape_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            scrape_date TEXT NOT NULL,
+            products_discovered INTEGER,
+            products_skipped INTEGER,
+            price_rows_recorded INTEGER,
+            status TEXT NOT NULL DEFAULT 'running'  -- running | ok | partial | failed
+        );
         """
+    )
+    conn.commit()
+
+    # Migration: older databases won't have this column yet.
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(products)")]
+    if "volume_liters" not in cols:
+        conn.execute("ALTER TABLE products ADD COLUMN volume_liters REAL")
+        conn.commit()
+
+
+def start_run(conn, scrape_date: str, started_at: str) -> int:
+    cur = conn.execute(
+        "INSERT INTO scrape_runs (started_at, scrape_date, status) VALUES (?, ?, 'running')",
+        (started_at, scrape_date),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def finish_run(
+    conn, run_id, finished_at, products_discovered, products_skipped, price_rows_recorded, status
+):
+    conn.execute(
+        """
+        UPDATE scrape_runs
+        SET finished_at = ?, products_discovered = ?, products_skipped = ?,
+            price_rows_recorded = ?, status = ?
+        WHERE id = ?
+        """,
+        (finished_at, products_discovered, products_skipped, price_rows_recorded, status, run_id),
     )
     conn.commit()
 
 
 def upsert_product(conn, slug, name, url, image_url):
+    volume_liters = parse_volume_liters(name)
     conn.execute(
         """
-        INSERT INTO products (slug, name, url, image_url)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO products (slug, name, url, image_url, volume_liters)
+        VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(slug) DO UPDATE SET
-            name=excluded.name, url=excluded.url, image_url=excluded.image_url
+            name=excluded.name, url=excluded.url, image_url=excluded.image_url,
+            volume_liters=excluded.volume_liters
         """,
-        (slug, name, url, image_url),
+        (slug, name, url, image_url, volume_liters),
     )
     return conn.execute("SELECT id FROM products WHERE slug=?", (slug,)).fetchone()[0]
 
@@ -271,10 +369,11 @@ def upsert_price(
 
 def main():
     today = date.today().isoformat()
-    now_iso = datetime.now(timezone.utc).isoformat()
+    started_at = datetime.now(timezone.utc).isoformat()
 
     conn = sqlite3.connect(DB_PATH)
     init_db(conn)
+    run_id = start_run(conn, today, started_at)
 
     # Phase 1: discover every product from the listing pages.
     all_products = {}  # slug -> product dict
@@ -299,6 +398,27 @@ def main():
         page += 1
         time.sleep(REQUEST_DELAY_SECONDS)
 
+    # Health check: if we found way fewer products than expected, something's
+    # probably broken (site layout changed, we got blocked, etc). Abort
+    # rather than silently overwrite good historical data with a bad day.
+    if len(all_products) < MIN_EXPECTED_PRODUCTS:
+        print(
+            f"\n! Only found {len(all_products)} products, expected at least "
+            f"{MIN_EXPECTED_PRODUCTS}. Something looks wrong (site layout change? "
+            f"blocked?). Aborting WITHOUT writing any price data for {today}.\n"
+        )
+        finish_run(
+            conn,
+            run_id,
+            datetime.now(timezone.utc).isoformat(),
+            products_discovered=len(all_products),
+            products_skipped=None,
+            price_rows_recorded=0,
+            status="failed",
+        )
+        conn.close()
+        return 1
+
     print(f"\nDiscovered {len(all_products)} products. Fetching full price details for each...\n")
 
     # Phase 2: visit each product's own page for the complete price list.
@@ -322,6 +442,7 @@ def main():
 
         print(f"  -> {len(prices)} shops")
 
+        now_iso = datetime.now(timezone.utc).isoformat()
         product_id = upsert_product(conn, slug, p["name"], p["url"], p["image"])
         for price_info in prices:
             upsert_price(
@@ -340,12 +461,25 @@ def main():
         conn.commit()
         time.sleep(REQUEST_DELAY_SECONDS)
 
+    skip_ratio = skipped_count / len(all_products) if all_products else 1.0
+    status = "ok" if skip_ratio < 0.1 else "partial"
+
+    finish_run(
+        conn,
+        run_id,
+        datetime.now(timezone.utc).isoformat(),
+        products_discovered=len(all_products),
+        products_skipped=skipped_count,
+        price_rows_recorded=total_price_rows,
+        status=status,
+    )
     conn.close()
     print(
-        f"\nDone. {len(all_products)} products discovered, {total_price_rows} price points "
-        f"recorded for {today}. ({skipped_count} products skipped today because their detail "
-        f"page didn't fetch or parse -- they'll be retried on the next run.)"
+        f"\nDone ({status}). {len(all_products)} products discovered, {total_price_rows} price "
+        f"points recorded for {today}. ({skipped_count} products skipped today because their "
+        f"detail page didn't fetch or parse -- they'll be retried on the next run.)"
     )
+    return 0
 
 
 if __name__ == "__main__":
