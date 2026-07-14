@@ -90,6 +90,7 @@ class SupabaseDatabase:
 
     def get_available_dates(self) -> list[str]:
         """Return all available scrape dates."""
+
         response = (
             self.client.table("prices")
             .select("scrape_date")
@@ -179,6 +180,95 @@ class SupabaseDatabase:
                 "product_name",
                 "product_url",
                 "price",
+                "shop_display",
+                "maps_url",
+            ]
+        ]
+
+    def get_best_value_leaderboard(
+        self,
+        scrape_date: str,
+    ) -> pd.DataFrame:
+        """Return cheapest price-per-liter across shops.
+
+        Only includes products where volume_liters is known (parsed from the
+        product name at scrape time) -- a product with no detectable volume
+        can't be compared on a per-liter basis, so it's silently excluded
+        rather than shown with a misleading price-per-liter of the raw price.
+        """
+
+        response = (
+            self.client.table("prices")
+            .select(
+                """
+                price,
+                shop,
+                products(
+                    name,
+                    url,
+                    volume_liters
+                )
+                """
+            )
+            .eq(
+                "scrape_date",
+                scrape_date,
+            )
+            .execute()
+        )
+
+        rows = [
+            {
+                "product_name": row["products"]["name"],
+                "product_url": row["products"]["url"],
+                "volume_liters": row["products"]["volume_liters"],
+                "shop": row["shop"],
+                "price": row["price"],
+            }
+            for row in response.data
+            if row["products"]["volume_liters"]
+        ]
+
+        df = pd.DataFrame(rows)
+
+        if df.empty:
+            return df
+
+        df["price_per_liter"] = df["price"] / df["volume_liters"]
+
+        min_ppl = df.groupby("product_name")["price_per_liter"].transform("min")
+
+        cheapest = df[df["price_per_liter"] == min_ppl].copy()
+
+        grouped = (
+            cheapest.groupby(
+                [
+                    "product_name",
+                    "product_url",
+                    "volume_liters",
+                    "price",
+                    "price_per_liter",
+                ]
+            )["shop"]
+            .apply(lambda shops: sorted(set(shops)))
+            .reset_index()
+        )
+
+        grouped["shop_display"] = grouped["shop"].apply(
+            lambda shops: ", ".join(shop_display_name(shop) for shop in shops)
+        )
+
+        grouped["maps_url"] = grouped["shop"].apply(lambda shops: maps_search_url(shops[0]))
+
+        grouped = grouped.sort_values("price_per_liter").reset_index(drop=True)
+
+        return grouped[
+            [
+                "product_name",
+                "product_url",
+                "volume_liters",
+                "price",
+                "price_per_liter",
                 "shop_display",
                 "maps_url",
             ]
