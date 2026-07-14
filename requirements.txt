@@ -1,0 +1,11 @@
+streamlit==1.59.1
+streamlit_plotly_events==0.0.6
+pandas==3.0.3
+plotly==6.9.0
+beautifulsoup4==4.15.0
+requests==2.34.2
+pyarrow==20.0.0
+geopy==2.4.1
+rootutils==1.0.7
+python-dotenv==1.2.2
+supabase==2.31.0
