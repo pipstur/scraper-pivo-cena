@@ -69,9 +69,9 @@ if by_value:
         }
     )[["Beer", "Volume (l)", "Price (RSD)", "RSD / liter", "Store", "Maps"]]
     column_config = {
-        "Volume (l)": st.column_config.NumberColumn(format="%.2f l"),
-        "Price (RSD)": st.column_config.NumberColumn(format="%.2f RSD"),
-        "RSD / liter": st.column_config.NumberColumn(format="%.2f RSD/l"),
+        "Volume (l)": st.column_config.NumberColumn(format="%.2f"),
+        "Price (RSD)": st.column_config.NumberColumn(format="%.2f"),
+        "RSD / liter": st.column_config.NumberColumn(format="%.2f"),
         "Maps": st.column_config.LinkColumn("Store (Google Maps)", display_text="Open in Maps"),
     }
 else:
@@ -88,7 +88,7 @@ else:
         }
     )[["Beer", "Price (RSD)", "Store", "Maps"]]
     column_config = {
-        "Price (RSD)": st.column_config.NumberColumn(format="%.2f RSD"),
+        "Price (RSD)": st.column_config.NumberColumn(format="%.2f"),
         "Maps": st.column_config.LinkColumn("Store (Google Maps)", display_text="Open in Maps"),
     }
 
